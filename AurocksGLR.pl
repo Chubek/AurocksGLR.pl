@@ -11,11 +11,10 @@ AurocksGLR.pl - generate a scannerless GLR-style parser from an Aurocks grammar
 
 =head1 SYNOPSIS
 
-  perl AurocksGLR.pl grammar.g > parser.c
+  perl AurocksGLR.pl grammar.g > parser.m4
 
-The generated C source can then be compiled with the C compiler and linked
-with the declarations, constructors, and helper functions supplied by the
-grammar's C prologue and epilogue.
+The generated intermediate representation is translated by a target macro
+set such as C<target/ToC.m4> or C<target/ToPython.m4>.
 
 =head1 DESCRIPTION
 
@@ -211,15 +210,15 @@ an action are not supported by the simple grammar reader.
 
 =head1 OUTPUT
 
-Generated C is written to standard output.  Diagnostics and malformed-input
-errors are written by the Perl generator to standard error and terminate with
-a non-zero exit status.
+The intermediate C<m4> representation is written to standard output.
+Diagnostics and malformed-input errors are written by the Perl generator to
+standard error and terminate with a non-zero exit status.
 
 =head1 EXAMPLES
 
 Generate and compile the bundled JSON parser:
 
-  perl AurocksGLR.pl JSON.g > json_parser.c
+  AurocksGLR.sh --target C JSON.g > json_parser.c
   cc -std=c99 -c json_parser.c
 
 The resulting parser exposes:
@@ -339,7 +338,8 @@ sub action_c {
 }
 
 sub emit {
-    my ($pro, $epi, $start, $d, $rules, $nonterm) = @_;
+    my ($pro, $epi, $start, $d, $rules, $nonterm, $api_name) = @_;
+    $api_name ||= "parse_$start";
     my %by;
     push @{ $by{$_->{lhs}} }, $_ for @$rules;
     my @nts = sort keys %$nonterm;
@@ -394,14 +394,76 @@ C
         }
         print "  *p = save; glr_fail(p); return 0;\n}\n";
     }
-    print "\nvoid *parse_$start(const char *input) { GLRParser p={input,input+strlen(input),NULL}; void *out=NULL; if(!glr_$start(&p,&out)) return NULL; glr_skip(&p); if(p.s!=p.end) return NULL; return out; }\nvoid *yyparse(const char *input) { return parse_$start(input); }\n";
+    print "\nvoid *$api_name(const char *input) { GLRParser p={input,input+strlen(input),NULL}; void *out=NULL; if(!glr_$start(&p,&out)) return NULL; glr_skip(&p); if(p.s!=p.end) return NULL; return out; }\n";
+    print "void *parse_$start(const char *input) { return $api_name(input); }\n"
+        if $api_name ne "parse_$start";
+    print "void *yyparse(const char *input) { return $api_name(input); }\n";
     print $epi;
 }
 
+sub emit_c_capture {
+    my (@args) = @_;
+    my $buf = '';
+    open my $fh, '>', \$buf or die "cannot capture generated C: $!";
+    local *STDOUT = $fh;
+    emit(@args);
+    close $fh;
+    return $buf;
+}
+
+sub m4_quote {
+    my ($s) = @_;
+    # Target files use [[...]] as m4 quotes.  In m4 a doubled closing quote
+    # represents a literal closing quote inside a quoted argument.
+    $s =~ s/\]\]/\]\]\]\]/g;
+    return "[[$s]]";
+}
+
+sub emit_ir {
+    my ($pro, $epi, $start, $d, $rules, $nonterm, $entrypoint) = @_;
+    my $api = $entrypoint || $start;
+    my $c = emit_c_capture($pro, $epi, $start, $d, $rules, $nonterm,
+        (defined($entrypoint) ? $entrypoint : undef));
+    print "dnl AurocksGLR intermediate representation; consume with an m4 target\n";
+    print "AUROCKS_START(", m4_quote($api), ")\n";
+    print "AUROCKS_PROLOGUE(", m4_quote($pro), ")\n";
+    if ($d->{skip} && defined $d->{skip}[0]) {
+        print "AUROCKS_SKIP(", m4_quote($d->{skip}[0]), ")\n";
+    }
+    for my $k (sort keys %$d) {
+        next if $k eq 'start' || $k eq 'skip';
+        for my $v (@{ $d->{$k} || [] }) {
+            print "AUROCKS_DIRECTIVE(", m4_quote($k), ",", m4_quote($v), ")\n";
+        }
+    }
+    for my $r (@$rules) {
+        print "AUROCKS_RULE(", m4_quote($r->{lhs}), ",",
+            m4_quote(join(' ', @{ $r->{rhs} })), ",",
+            m4_quote($r->{action}), ",", $r->{dprec} + 0, ")\n";
+    }
+    print "AUROCKS_EPILOGUE(", m4_quote($epi), ")\n";
+    print "AUROCKS_C_SOURCE(", m4_quote($c), ")\n";
+}
+
 sub main {
-    my ($path) = @ARGV;
-    die "usage: $0 grammar.g\n" unless $path;
+    my $entrypoint;
+    my @args;
+    while (@ARGV) {
+        my $a = shift @ARGV;
+        if ($a eq '--entrypoint' || $a eq '-e') {
+            $entrypoint = shift @ARGV // die "--entrypoint requires a name\n";
+        } elsif ($a eq '--help' || $a eq '-h') {
+            print "usage: $0 [--entrypoint NAME] grammar.g\n";
+            return;
+        } else {
+            push @args, $a;
+        }
+    }
+    my ($path) = @args;
+    die "usage: $0 [--entrypoint NAME] grammar.g\n" unless $path;
     my ($pro, $epi, $start, $d, $rules, $nonterm) = parse_grammar(slurp($path));
-    emit($pro, $epi, $start, $d, $rules, $nonterm);
+    die "invalid entrypoint name\n"
+        if defined($entrypoint) && $entrypoint !~ /^[A-Za-z_]\w*$/;
+    emit_ir($pro, $epi, $start, $d, $rules, $nonterm, $entrypoint);
 }
 main();

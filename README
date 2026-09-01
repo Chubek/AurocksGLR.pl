@@ -2,18 +2,28 @@ NAME
     AurocksGLR.pl - generate a scannerless GLR-style parser from an Aurocks
     grammar
 
-SYNOPSIS
-      perl AurocksGLR.pl grammar.g > parser.c
+The command-line driver is `AurocksGLR.sh`. It generates an intermediate m4
+stream and evaluates it with a selected target:
 
-    The generated C source can then be compiled with the C compiler and
-    linked with the declarations, constructors, and helper functions
-    supplied by the grammar's C prologue and epilogue.
+    ./AurocksGLR.sh --target C examples/JSON.g > parser.c
+    ./AurocksGLR.sh -T Python examples/JSON.g > parser.py
+    ./AurocksGLR.sh -m my_target.m4 examples/JSON.g
+
+Targets are installed under `aurocksglr-target`; see `EXTENDING.md` for the
+macro contract and custom target instructions.
+
+SYNOPSIS
+      perl AurocksGLR.pl grammar.g > parser.m4
+
+    The generated m4 stream is evaluated by AurocksGLR.sh with a target
+    macro set.
 
 DESCRIPTION
     "AurocksGLR.pl" is a self-contained parser generator for the small
     grammar language used by the Aurocks examples. It reads a grammar file,
     extracts its C prologue, directives, productions, semantic actions, and
-    C epilogue, and writes a complete C parser to standard output.
+    C epilogue, and writes a target-neutral intermediate representation to
+    standard output.
 
     The generated parser is scannerless: literal terminals and
     regular-expression terminals are matched directly against the input
@@ -175,14 +185,14 @@ LIMITATIONS
     reader.
 
 OUTPUT
-    Generated C is written to standard output. Diagnostics and
-    malformed-input errors are written by the Perl generator to standard
-    error and terminate with a non-zero exit status.
+    Generated target source is written to standard output. Diagnostics and
+    malformed-input errors are written to standard error and terminate with
+    a non-zero exit status.
 
 EXAMPLES
     Generate and compile the bundled JSON parser:
 
-      perl AurocksGLR.pl JSON.g > json_parser.c
+      AurocksGLR.sh --target C JSON.g > json_parser.c
       cc -std=c99 -c json_parser.c
 
     The resulting parser exposes:
@@ -192,4 +202,3 @@ EXAMPLES
 
 AUTHOR
     The Aurocks project.
-

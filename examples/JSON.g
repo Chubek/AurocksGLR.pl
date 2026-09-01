@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* A simple singly linked list used for arrays and object members. */
 typedef struct SList
@@ -48,6 +49,16 @@ static YY_TYPE *build_lit    (enum YY_TAG tag);   /* true / false / null */
 /* List helpers. append() adds to the tail so source order is preserved. */
 static SList *slist_new    (char *key, YY_TYPE *value);
 static SList *slist_append (SList *list, char *key, YY_TYPE *value);
+
+static inline void die (char *msg)
+{
+   fprintf (stderr, "%s", msg);
+   fputc ('\n', stderr);
+   exit (EXIT_FAILURE);
+}
+
+
+static void pretty_print_json (YY_TYPE *);
 
 %}
 
@@ -180,5 +191,138 @@ slist_append (SList *list, char *key, YY_TYPE *value)
       tail = tail->next;
    tail->next = node;
    return list;
+}
+
+int
+main (int argc, char **argv)
+{
+   FILE *infile = NULL;
+
+   if (argc < 2 && !isatty (STDIN_FILENO))   /* piped / redirected input */
+      infile = stdin;
+   else if (argc < 2)
+      die ("No input file given");
+   else
+   {
+      if (access (argv[1], F_OK) != 0)
+         die ("File does not exist");
+
+      infile = fopen (argv[1], "r");
+      if (infile == NULL)
+         die ("Failed to open file");
+   }
+
+   fseek (infile, 0, SEEK_END);          /* go to end to measure size    */
+   ssize_t len = ftell (infile);
+   fseek (infile, 0, SEEK_SET);          /* rewind before reading        */
+
+   if (len < 0)
+      die ("Failed reading JSON file");
+
+   char *contents = malloc (len + 1);    /* +1 for null terminator       */
+   if (contents == NULL)
+      die ("Out of memory");
+
+   size_t rlen = fread (contents, 1, len, infile);
+   contents[rlen] = '\0';
+
+   if ((ssize_t) rlen != len)
+      die ("Error reading entire file");
+
+   fclose (infile);
+
+   YY_TYPE *rjson = (YY_TYPE*)parse_json (contents);
+   free (contents);
+
+   pretty_print_json (rjson);
+   free (rjson);
+
+   return 0;
+}
+
+static void pretty_print_r (YY_TYPE *node, int depth);
+
+static void
+indent (int depth)
+{
+   for (int i = 0; i < depth; i++)
+      fputs ("  ", stdout);   /* two-space indent per level */
+}
+
+static void
+pretty_print_r (YY_TYPE *node, int depth)
+{
+   if (node == NULL)
+   {
+      fputs ("null", stdout);
+      return;
+   }
+
+   switch (node->tag)
+   {
+   case JSON_NULL:    fputs ("null",  stdout); break;
+   case JSON_TRUE:    fputs ("true",  stdout); break;
+   case JSON_FALSE:   fputs ("false", stdout); break;
+
+   case JSON_STRING:
+      /* $TOKEN was stored with surrounding quotes intact via my_strdup. */
+      fputs (node->as.string, stdout);
+      break;
+
+   case JSON_NUMBER:
+      /* Print as integer when the value is whole, else floating-point. */
+      if (node->as.number == (long long) node->as.number)
+         printf ("%lld", (long long) node->as.number);
+      else
+         printf ("%.17g", node->as.number);
+      break;
+
+   case JSON_ARRAY:
+   {
+      SList *elem = node->as.array;
+      if (elem == NULL) { fputs ("[]", stdout); break; }
+
+      fputs ("[\n", stdout);
+      for (; elem != NULL; elem = elem->next)
+      {
+         indent (depth + 1);
+         pretty_print_r (elem->value, depth + 1);
+         if (elem->next != NULL)
+            fputc (',', stdout);
+         fputc ('\n', stdout);
+      }
+      indent (depth);
+      fputc (']', stdout);
+      break;
+   }
+
+   case JSON_OBJECT:
+   {
+      SList *member = node->as.object;
+      if (member == NULL) { fputs ("{}", stdout); break; }
+
+      fputs ("{\n", stdout);
+      for (; member != NULL; member = member->next)
+      {
+         indent (depth + 1);
+         /* key was also stored with surrounding quotes by the grammar action */
+         printf ("%s: ", member->key);
+         pretty_print_r (member->value, depth + 1);
+         if (member->next != NULL)
+            fputc (',', stdout);
+         fputc ('\n', stdout);
+      }
+      indent (depth);
+      fputc ('}', stdout);
+      break;
+   }
+   }
+}
+
+static void
+pretty_print_json (YY_TYPE *json)
+{
+   pretty_print_r (json, 0);
+   fputc ('\n', stdout);
 }
 
