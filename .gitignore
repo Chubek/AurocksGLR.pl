@@ -10,7 +10,11 @@ __pycache__
 *.out
 json
 json-advanced
+JSON
+JSON-Advanced
 ansi-c
+lua
+*-parser
 
 *.so
 *.o
