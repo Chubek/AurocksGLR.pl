@@ -25,3 +25,6 @@ lua
 *.bak*
 *.pdf
 *.html
+
+AGENTS.md
+.agents/
