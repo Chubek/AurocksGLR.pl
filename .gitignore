@@ -28,3 +28,8 @@ lua
 
 AGENTS.md
 .agents/
+
+build-*/
+build
+build_*/
+*build*
