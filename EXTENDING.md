@@ -5,7 +5,7 @@ AurocksGLR has two stages:
 1. `AurocksGLR.pl` reads a grammar and writes an intermediate `.m4` stream.
 2. GNU `m4` evaluates that stream using a target macro set.
 
-The generated stream calls these macros (all arguments use `[[...]]` quoting):
+The generated stream calls these macros (all arguments use `<<<...>>>` quoting):
 
 | Macro | Arguments | Meaning |
 | --- | --- | --- |

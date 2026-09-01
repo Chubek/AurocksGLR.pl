@@ -332,7 +332,9 @@ sub action_c {
     $a =~ s/\$TOKEN/token/g;
     $a =~ s/\$(\d+)/v$1/g;
     $a =~ s/result\s*=\s*strtod\s*\(([^;]+)\)/result = glr_box_double(strtod($1))/g;
-    $a =~ s/build_number\s*\(\s*(v\d+)\s*\)/build_number(*(double*)&$1)/g;
+    # Numeric terminals are boxed as double*.  Cast the semantic value back
+    # to that pointer type before passing it to a grammar constructor.
+    $a =~ s/build_number\s*\(\s*(v\d+)\s*\)/build_number(*(double*)$1)/g;
     $a =~ s/\b(v\d+)->/((SList*)$1)->/g;
     return $a;
 }
@@ -343,7 +345,10 @@ sub emit {
     my %by;
     push @{ $by{$_->{lhs}} }, $_ for @$rules;
     my @nts = sort keys %$nonterm;
-    my $skip = $d->{skip} && $d->{skip}[0] =~ m!/(.*)/! ? $1 : '';
+    my $skip = $d->{skip} && $d->{skip}[0] =~ m!^\s*/((?:\\.|[^/])*)/! ? $1 : '';
+    # POSIX regex does not portably interpret \t, \r, and \n as escapes.
+    # Use its portable character class when a layout class contains them.
+    $skip =~ s/\[[^\]]*\\[trn][^\]]*\]/[[:space:]]/;
     print $pro, "\n#include <regex.h>\n#include <stddef.h>\n#include <stdlib.h>\n#include <string.h>\n\n";
     print "/* Scannerless GLR/SPPF controls accepted: %start %skip %prefer %avoid %longest %dprec %left %right %nonassoc %merge %reject %cut %expect %glr %sppf %ambiguity %resolve %priority %inline %layout %lexer %error. */\n";
     print "enum { GLR_SPPF_PREFER=1, GLR_SPPF_AVOID=2, GLR_SPPF_LONGEST=4, GLR_SPPF_DPREC=8 };\n";
@@ -358,8 +363,8 @@ C
     }
     print "}\nstatic int glr_match(GLRParser *p, const char *spec, char **tok) {\n";
     print "  const char *at = p->s; size_t n; regex_t r; regmatch_t m;\n";
-    print "  if (spec[0] == '\"' && spec[strlen(spec)-1] == '\"') { n = strlen(spec)-2; if ((size_t)(p->end-p->s) < n || strncmp(p->s, spec+1, n)) return 0; p->s += n; *tok = (char*)at; return 1; }\n";
-    print "  if (regcomp(&r, spec, REG_EXTENDED)) return 0; if (regexec(&r, p->s, 1, &m, 0) != 0 || m.rm_so != 0 || m.rm_eo <= 0 || p->s + m.rm_eo > p->end) { regfree(&r); return 0; } p->s += m.rm_eo; regfree(&r); *tok = (char*)at; return 1;\n}\n";
+    print "  if (spec[0] == '\"' && spec[strlen(spec)-1] == '\"') { n = strlen(spec)-2; if ((size_t)(p->end-p->s) < n || strncmp(p->s, spec+1, n)) return 0; p->s += n; char *x=(char*)malloc(n+1); if(!x)return 0; memcpy(x,at,n); x[n]=0; *tok=x; return 1; }\n";
+    print "  if (regcomp(&r, spec, REG_EXTENDED)) return 0; if (regexec(&r, p->s, 1, &m, 0) != 0 || m.rm_so != 0 || m.rm_eo <= 0 || p->s + m.rm_eo > p->end) { regfree(&r); return 0; } n=(size_t)m.rm_eo; char *x=(char*)malloc(n+1); if(!x){regfree(&r);return 0;} memcpy(x,at,n); x[n]=0; p->s += n; regfree(&r); *tok=x; return 1;\n}\n";
     print "static void glr_fail(GLRParser *p) { if (!p->error) p->error = p->s; }\n\n";
     print "static void *glr_box_double(double d) { double *x=(double*)malloc(sizeof *x); if(x)*x=d; return x; }\n";
     print "static char *my_strdup(const char *s) { size_t n=strlen(s); char *x=(char*)malloc(n+1); if(x){memcpy(x,s,n);x[n]=0;} return x; }\n\n";
@@ -367,6 +372,51 @@ C
     for my $nt (@nts) {
         print "\nstatic int glr_$nt(GLRParser *p, void **out) {\n  GLRParser save = *p;\n";
         my $idx = 0;
+        my @nt_rules = @{ $by{$nt} || [] };
+        my @left = grep { @{ $_->{rhs} } && $_->{rhs}[0] eq $nt } @nt_rules;
+        my @seed = grep { !(@{ $_->{rhs} } && $_->{rhs}[0] eq $nt) } @nt_rules;
+        # Eliminate direct left recursion (the common list idiom A: A sep x
+        # | x) into a seed parse followed by an iterative suffix loop.
+        if (@left && @seed) {
+            for my $r (@seed) {
+                $idx++;
+                print "  { GLRParser attempt = save; void *result = NULL; char *token = NULL;\n";
+                my $n = @{ $r->{rhs} };
+                for my $i (1..$n) { print "  void *v$i = NULL;\n" }
+                print "  int ok = 1;\n";
+                for my $i (0..$n-1) {
+                    my $s = $r->{rhs}[$i];
+                    if ($nonterm->{$s}) {
+                        print "  if (ok && !glr_$s(&attempt, &v", $i+1, ")) ok = 0;\n";
+                    } else {
+                        my $q = quoted($s);
+                        my $spec = defined($q) ? '"' . $q . '"' : ($s =~ m!^/(.*)/$! ? "^($1)" : "^" . quotemeta($s));
+                        print "  if (ok) { glr_skip(&attempt); if (!glr_match(&attempt, ", c_quote($spec), ", &token)) ok = 0; }\n";
+                    }
+                }
+                print "  if (ok) { glr_skip(&attempt); { ", action_c($r->{action}), " }\n";
+                print "    void *acc = result;\n    for (;;) { GLRParser step = attempt; int advanced = 0;\n";
+                for my $r (@left) {
+                    my $n = @{ $r->{rhs} };
+                    print "      if (!advanced) { GLRParser tail = step; int tail_ok = 1; char *tail_token = NULL;\n";
+                    for my $i (1..$n-1) { print "        void *v", $i+1, " = NULL;\n" }
+                    for my $i (1..$n-1) {
+                        my $s = $r->{rhs}[$i];
+                        if ($nonterm->{$s}) {
+                            print "        if (tail_ok && !glr_$s(&tail, &v", $i+1, ")) tail_ok = 0;\n";
+                        } else {
+                            my $q = quoted($s);
+                            my $spec = defined($q) ? '"' . $q . '"' : ($s =~ m!^/(.*)/$! ? "^($1)" : "^" . quotemeta($s));
+                            print "        if (tail_ok) { glr_skip(&tail); if (!glr_match(&tail, ", c_quote($spec), ", &tail_token)) tail_ok = 0; }\n";
+                        }
+                    }
+                    print "        if (tail_ok) { void *v1 = acc; GLRParser attempt = tail; void *result = acc; { ", action_c($r->{action}), " } acc = result; step = tail; advanced = 1; }\n      }\n";
+                }
+                print "      if (!advanced) break; attempt = step; }\n    *p = attempt; *out = acc; return 1; }\n  }\n";
+            }
+            print "  *p = save; glr_fail(p); return 0;\n}\n";
+            next;
+        }
         my @alternatives = sort {
             my ($ae, $be) = (@{$a->{rhs}} == 0, @{$b->{rhs}} == 0);
             my ($al, $bl) = (($a->{rhs}[0] // '') eq $nt, ($b->{rhs}[0] // '') eq $nt);
@@ -413,10 +463,9 @@ sub emit_c_capture {
 
 sub m4_quote {
     my ($s) = @_;
-    # Target files use [[...]] as m4 quotes.  In m4 a doubled closing quote
-    # represents a literal closing quote inside a quoted argument.
-    $s =~ s/\]\]/\]\]\]\]/g;
-    return "[[$s]]";
+    # Target files use <<<...>>> as m4 quotes.
+    $s =~ s/>>>/>> >>/g;
+    return "<<<$s>>>";
 }
 
 sub emit_ir {

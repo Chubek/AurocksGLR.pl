@@ -231,7 +231,7 @@ main (int argc, char **argv)
 
    fclose (infile);
 
-   YY_TYPE *rjson = (YY_TYPE*)parse_json (contents);
+   YY_TYPE *rjson = (YY_TYPE*)yyparse (contents);
    free (contents);
 
    pretty_print_json (rjson);
