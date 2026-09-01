@@ -25,4 +25,4 @@ uninstall:
 	rm -rf "$(targetdir)"
 
 clean:
-	@:
+	rm -rf *.c *.go *.lua *.rb *.py *.pyc __pycache__ *.pas *.out JSON JSON-Advanced Arith-C Arith-Py
