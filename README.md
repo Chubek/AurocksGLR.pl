@@ -12,13 +12,14 @@ DESCRIPTION
     "AurocksGLR.pl" is a self-contained parser generator for the small
     grammar language used by the Aurocks examples. It reads a grammar file,
     extracts its C prologue, directives, productions, semantic actions, and
-    C epilogue, and writes a complete C parser to standard output.
+    C epilogue, and writes a target-neutral intermediate representation to
+    standard output.
 
     The generated parser is scannerless: literal terminals and
-    regular-expression terminals are matched directly against the input
-    buffer. No separate lexer is required. A %skip regular expression may be
-    used to consume layout such as spaces and newlines between grammar
-    symbols.
+    regular-expression terminals are compiled into matcher code that runs
+    directly against the input buffer. No separate lexer is required. A %skip
+    regular expression may be used to consume layout such as spaces and
+    newlines between grammar symbols.
 
     The implementation uses recursive GLR-style alternatives. Each
     production alternative is attempted from the same input position, with
@@ -133,8 +134,7 @@ GENERATED C RUNTIME
 
     * Literal matching for quoted terminals.
 
-    * POSIX extended regular-expression matching for slash-delimited
-      terminals.
+    * Compiled regular-expression matching for slash-delimited terminals.
 
     * One generated function per nonterminal.
 
@@ -168,8 +168,8 @@ LIMITATIONS
     order and successful alternative selection remain the operational
     resolution mechanism.
 
-    Regular expressions use the host C library's POSIX extended-regex
-    syntax. Actions must be valid C after the documented substitutions.
+    Regular expressions are compiled to imperative matcher code for a POSIX
+    ERE subset. Actions must be valid C after the documented substitutions.
     Nested braces in an action are not supported by the simple grammar
     reader.
 
@@ -191,4 +191,3 @@ EXAMPLES
 
 AUTHOR
     The Aurocks project.
-
